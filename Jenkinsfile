@@ -105,6 +105,15 @@ def runRelease(architectures) {
         version = getCliVersion(builderPath)
         print "CLI version: $version"
     }
+    /**
+    * Prepare Signed MacOS binaries
+    * This happens at the start of the release process, so the binaries will be ready
+    * for the release process later on.
+    */
+    stage('Sign MacOS binaries') {
+        triggerDarwinBinariesSigningWorkflow()
+    }
+
     configRepo21()
 
     try {
@@ -314,7 +323,13 @@ def uploadCli(architectures) {
     for (int i = 0; i < architectures.size(); i++) {
         def currentBuild = architectures[i]
         stage("Build and upload ${currentBuild.pkg}") {
-            buildAndUpload(currentBuild.goos, currentBuild.goarch, currentBuild.pkg, currentBuild.fileExtension)
+            // MacOS binaries should be downloaded from GitHub packages, as they are signed there.
+            if (currentBuild.goos == 'darwin') {
+                downloadDarwinSignedBinaries(currentBuild.goarch,currentBuild.fileExtension)()
+                uploadBinaryToJfrogRepo21(currentBuild.pkg, $cliExecutableName)
+            } else {
+                buildAndUpload(currentBuild.goos, currentBuild.goarch, currentBuild.pkg, currentBuild.fileExtension)
+            }
         }
     }
 }
@@ -510,4 +525,32 @@ def dockerLogin(){
     ]) {
             sh "echo $REPO21_PASSWORD | docker login $REPO_NAME_21 -u=$REPO21_USER --password-stdin"
        }
+}
+
+/**
+ * This will trigger the Github action that will sign and notarize the MacOS binaries.
+ * The artifacts will be uploaded to Github artifacts
+ */
+def triggerDarwinBinariesSigningWorkflow() {
+    withCredentials([string(credentialsId: 'github-access-token', variable: "GITHUB_ACCESS_TOKEN")]) {
+        stage("Sign MacOS binaries") {
+            sh """
+                ./build/apple_release/scripts/trigger-sign-mac-OS-workflow.sh $cliExecutableName $releaseVersion $GITHUB_ACCESS_TOKEN
+            """
+        }
+    }
+}
+
+/**
+ * The Darwin binaries are signed in GitHub actions.
+ * This function will make sure to download the specific artifact according to
+ * executable name and release version.
+ * As the GitHub action may take some time, we will retry to download the artifact with timeout.
+ */
+def downloadDarwinSignedBinaries(goarch) {
+    withCredentials([string(credentialsId: 'github-access-token', variable: "GITHUB_ACCESS_TOKEN")]) {
+        sh """
+            ./build/apple_release/scripts/download-signed-mac-OS-binaries.sh $cliExecutableName $releaseVersion $goarch $GITHUB_ACCESS_TOKEN
+        """
+    }
 }
